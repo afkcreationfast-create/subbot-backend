@@ -7,8 +7,7 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   delay,
-  makeCacheableSignalKeyStore,
-  Browsers
+  makeCacheableSignalKeyStore
 } = require('@whiskeysockets/baileys');
 
 const handleCommands = require('./commands');
@@ -18,9 +17,6 @@ const PORT = process.env.PORT || 10000;
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
-
-// Stockage global des instances de sockets actifs
-const activeSockets = {};
 
 app.get('/', (req, res) => {
   res.send('AFK SubBot Backend en ligne !');
@@ -36,7 +32,7 @@ app.get('/pair', async (req, res) => {
   num = num.replace(/[^0-9]/g, '');
   const sessionPath = path.join(__dirname, `session_${num}`);
 
-  // Nettoyage de la session précédente si existante
+  // Suppression du dossier de session précédent pour autoriser une nouvelle tentative
   if (fs.existsSync(sessionPath)) {
     fs.rmSync(sessionPath, { recursive: true, force: true });
   }
@@ -51,13 +47,8 @@ app.get('/pair', async (req, res) => {
       },
       printQRInTerminal: false,
       logger: pino({ level: 'fatal' }),
-      browser: Browsers.macOS('Desktop'), // Signature officielle reconnue par WhatsApp
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000
+      browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
-
-    activeSockets[num] = sock;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -65,24 +56,39 @@ app.get('/pair', async (req, res) => {
       await handleCommands(sock, msg);
     });
 
-    sock.ev.on('connection.update', (update) => {
-      const { connection } = update;
+    // Attente active de la connexion initiale
+    let codeSent = false;
+
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, qr } = update;
+      
+      if (!sock.authState.creds.registered && !codeSent) {
+        codeSent = true;
+        await delay(3000);
+        try {
+          const code = await sock.requestPairingCode(num);
+          const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+          if (!res.headersSent) {
+            return res.json({ code: formattedCode });
+          }
+        } catch (err) {
+          console.error("Erreur génération code:", err);
+          if (!res.headersSent) {
+            return res.status(500).json({ error: 'Erreur lors de la génération du code' });
+          }
+        }
+      }
+
       if (connection === 'open') {
-        console.log(`[+] SubBot connecté avec succès pour : ${num}`);
+        console.log(`[+] SubBot connecté pour : ${num}`);
       }
     });
 
-    await delay(3000);
-    const code = await sock.requestPairingCode(num);
-    
-    // Formater le code avec le tiret au milieu (ex: XXXX-XXXX)
-    const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-    
-    return res.json({ code: formattedCode });
-
   } catch (err) {
-    console.error("Erreur pairing:", err);
-    return res.status(500).json({ error: 'Erreur lors de la génération du code' });
+    console.error("Erreur serveur:", err);
+    if (!res.headersSent) {
+      return res.status(500).json({ error: 'Erreur interne du serveur' });
+    }
   }
 });
 
