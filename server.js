@@ -7,7 +7,6 @@ const QRCode = require('qrcode');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  delay,
   makeCacheableSignalKeyStore,
   Browsers
 } = require('@whiskeysockets/baileys');
@@ -20,19 +19,14 @@ const PORT = process.env.PORT || 10000;
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-const activeSockets = {};
-
 app.get('/', (req, res) => {
-  res.send('AFK SubBot Backend en ligne !');
+  res.send('AFK SubBot Backend prêt !');
 });
 
-// ROUTE 1 : Connexion par Code d'Appairage
+// ROUTE CODE PAIRING ULTRA-RAPIDE
 app.get('/pair', async (req, res) => {
   let num = req.query.number;
-
-  if (!num) {
-    return res.status(400).json({ error: 'Numéro de téléphone requis' });
-  }
+  if (!num) return res.status(400).json({ error: 'Numéro requis' });
 
   num = num.replace(/[^0-9]/g, '');
   const sessionPath = path.join(__dirname, `session_${num}`);
@@ -52,12 +46,9 @@ app.get('/pair', async (req, res) => {
       printQRInTerminal: false,
       logger: pino({ level: 'fatal' }),
       browser: Browsers.macOS('Desktop'),
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000
+      connectTimeoutMs: 30000,
+      keepAliveIntervalMs: 15000
     });
-
-    activeSockets[num] = sock;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -68,30 +59,32 @@ app.get('/pair', async (req, res) => {
     sock.ev.on('connection.update', async (update) => {
       const { connection } = update;
       if (connection === 'open') {
-        console.log(`[+] Connecté pour le numéro : ${num}`);
+        console.log(`[+] Connecté : ${num}`);
         await sock.sendMessage(`${num}@s.whatsapp.net`, { 
-          text: ` Connexion réussie ! Votre SubBot AFK est maintenant opérationnel. Tapez *.menu* pour afficher les commandes.` 
+          text: `Connexion réussie ! Votre SubBot est prêt. Tapez *.menu* pour commencer.` 
         });
       }
     });
 
-    await delay(3000);
-    const code = await sock.requestPairingCode(num);
-    const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-    
-    return res.json({ code: formattedCode });
+    // Génération instantanée sans délai d'attente
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(num);
+        const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+        if (!res.headersSent) return res.json({ code: formattedCode });
+      } catch (e) {
+        if (!res.headersSent) return res.status(500).json({ error: 'Erreur réseau, réessayez' });
+      }
+    }, 1000);
 
   } catch (err) {
-    console.error("Erreur pairing:", err);
-    if (!res.headersSent) {
-      return res.status(500).json({ error: 'Erreur lors de la génération du code' });
-    }
+    if (!res.headersSent) res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ROUTE 2 : Connexion par QR Code
+// ROUTE QR CODE INSTANTANÉ
 app.get('/qr', async (req, res) => {
-  let num = req.query.number || 'default_qr';
+  let num = req.query.number || 'default';
   num = num.replace(/[^0-9]/g, '');
   const sessionPath = path.join(__dirname, `session_qr_${num}`);
 
@@ -118,32 +111,21 @@ app.get('/qr', async (req, res) => {
       await handleCommands(sock, msg);
     });
 
-    let qrSent = false;
-
+    let sent = false;
     sock.ev.on('connection.update', async (update) => {
-      const { connection, qr } = update;
-
-      if (qr && !qrSent) {
-        qrSent = true;
+      const { qr } = update;
+      if (qr && !sent) {
+        sent = true;
         const qrImage = await QRCode.toDataURL(qr);
-        if (!res.headersSent) {
-          return res.json({ qr: qrImage });
-        }
-      }
-
-      if (connection === 'open') {
-        console.log(`[+] Connexion QR validée.`);
+        if (!res.headersSent) return res.json({ qr: qrImage });
       }
     });
 
   } catch (err) {
-    console.error("Erreur QR:", err);
-    if (!res.headersSent) {
-      return res.status(500).json({ error: 'Erreur génération QR' });
-    }
+    if (!res.headersSent) res.status(500).json({ error: 'Erreur QR' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur prêt sur le port ${PORT}`);
+  console.log(`Serveur démarré sur le port ${PORT}`);
 });
