@@ -7,7 +7,9 @@ const QRCode = require('qrcode');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  makeCacheableSignalKeyStore
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
+  DisconnectReason
 } = require('@whiskeysockets/baileys');
 
 const handleCommands = require('./commands');
@@ -18,38 +20,41 @@ const PORT = process.env.PORT || 10000;
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+// Stockage global des instances de sockets actives
+const activeSockets = {};
+
 app.get('/', (req, res) => {
-  res.send('AFK SubBot Backend prêt !');
+  res.send('AFK SubBot Backend prêt et opérationnel !');
 });
 
-// ROUTE CODE PAIRING
+// ROUTE CODE PAIRING AMÉLIORÉE
 app.get('/pair', async (req, res) => {
   let num = req.query.number;
-  if (!num) return res.status(400).json({ error: 'Numéro requis' });
+  if (!num) return res.status(400).json({ error: 'Numéro de téléphone requis' });
 
   num = num.replace(/[^0-9]/g, '');
   const sessionPath = path.join(__dirname, `session_${num}`);
 
-  if (fs.existsSync(sessionPath)) {
-    fs.rmSync(sessionPath, { recursive: true, force: true });
-  }
-
   try {
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    
+    const { version } = await fetchLatestBaileysVersion();
+
     const sock = makeWASocket({
-      version: [2, 3000, 1015901307], // Version WhatsApp requise
+      version,
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
       },
       printQRInTerminal: false,
       logger: pino({ level: 'fatal' }),
-      browser: ['Ubuntu', 'Chrome', '20.0.04'], // Emulation stable
+      // Emulation Windows Chrome beaucoup plus stable avec Baileys v7
+      browser: ['Windows', 'Chrome', '120.0.0.0'],
       connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 25000,
-      generateHighQualityLinkPreview: true
+      keepAliveIntervalMs: 30000,
+      markOnlineOnConnect: true
     });
+
+    activeSockets[num] = sock;
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -59,82 +64,49 @@ app.get('/pair', async (req, res) => {
 
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect } = update;
-      
+
       if (connection === 'open') {
-        console.log(`[+] Connecté : ${num}`);
+        console.log(`[+] Connecté avec succès : ${num}`);
         await sock.sendMessage(`${num}@s.whatsapp.net`, { 
-          text: `Connexion réussie ! Votre SubBot est prêt. Tapez *.menu* pour commencer.` 
+          text: `Connexion réussie ! Votre SubBot AFK est prêt. Tapez *.menu* pour commencer.` 
         });
       }
 
       if (connection === 'close') {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        console.log(`[-] Connexion fermée pour ${num}, raison : ${reason}`);
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log(`[-] Connexion fermée pour ${num}. Reconnexion automatique : ${shouldReconnect}`);
+        
+        if (statusCode === DisconnectReason.loggedOut) {
+          if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+          }
+        }
       }
     });
 
-    // Envoi du Code Pairing
+    // Génération du code pairing après 5 secondes pour laisser le temps au socket d'être prêt
     setTimeout(async () => {
       try {
-        const code = await sock.requestPairingCode(num);
-        const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-        if (!res.headersSent) return res.json({ code: formattedCode });
+        if (!sock.authState.creds.registered) {
+          const code = await sock.requestPairingCode(num);
+          const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+          if (!res.headersSent) return res.json({ code: formattedCode });
+        } else {
+          if (!res.headersSent) return res.json({ message: 'Déjà connecté ou session existante' });
+        }
       } catch (e) {
-        console.error("Erreur Pairing Code:", e);
-        if (!res.headersSent) return res.status(500).json({ error: 'Erreur génération du code' });
+        console.error('Erreur Pairing:', e);
+        if (!res.headersSent) return res.status(500).json({ error: 'Erreur lors de la génération du code.' });
       }
-    }, 3000); // 3 secondes pour assurer la poignée de main du socket
+    }, 5000);
 
   } catch (err) {
-    if (!res.headersSent) res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-// ROUTE QR CODE
-app.get('/qr', async (req, res) => {
-  let num = req.query.number || 'default';
-  num = num.replace(/[^0-9]/g, '');
-  const sessionPath = path.join(__dirname, `session_qr_${num}`);
-
-  if (fs.existsSync(sessionPath)) {
-    fs.rmSync(sessionPath, { recursive: true, force: true });
-  }
-
-  try {
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-
-    const sock = makeWASocket({
-      version: [2, 3000, 1015901307],
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
-      },
-      printQRInTerminal: false,
-      logger: pino({ level: 'fatal' }),
-      browser: ['Ubuntu', 'Chrome', '20.0.04']
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('messages.upsert', async (msg) => {
-      await handleCommands(sock, msg);
-    });
-
-    let sent = false;
-    sock.ev.on('connection.update', async (update) => {
-      const { qr } = update;
-      if (qr && !sent) {
-        sent = true;
-        const qrImage = await QRCode.toDataURL(qr);
-        if (!res.headersSent) return res.json({ qr: qrImage });
-      }
-    });
-
-  } catch (err) {
-    if (!res.headersSent) res.status(500).json({ error: 'Erreur QR' });
+    console.error('Erreur Serveur:', err);
+    if (!res.headersSent) res.status(500).json({ error: 'Erreur interne du serveur' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur AFK démarré sur le port ${PORT}`);
+  console.log(`Serveur AFK SubBot démarré sur le port ${PORT}`);
 });
