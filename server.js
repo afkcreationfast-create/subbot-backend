@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const pino = require('pino');
 const path = require('path');
+const qrcode = require('qrcode'); // Nécessite d'ajouter "qrcode" dans package.json
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -20,9 +21,10 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 let globalSock = null;
-let activePairingCode = null;
+let latestQR = null;
+let isConnected = false;
 
-// --- INTERFACE GRAPHIQUE INTÉGRÉE ---
+// --- INTERFACE GRAPHIQUE AVEC AFFICHAGE DU QR CODE ---
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -36,48 +38,62 @@ app.get('/', (req, res) => {
             .card { background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 100%; max-width: 380px; text-align: center; }
             h2 { color: #38bdf8; margin-bottom: 5px; }
             p { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
-            input { width: 100%; padding: 12px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 16px; margin-bottom: 15px; box-sizing: border-box; text-align: center; }
-            button { background: #0284c7; color: white; border: none; padding: 12px; width: 100%; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; }
+            button { background: #0284c7; color: white; border: none; padding: 12px; width: 100%; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; margin-top: 10px; }
             button:hover { background: #0369a1; }
-            #result { margin-top: 20px; font-size: 16px; word-break: break-all; }
-            .code-box { background: #0f172a; border: 2px dashed #38bdf8; padding: 12px; border-radius: 6px; font-size: 22px; letter-spacing: 2px; color: #38bdf8; margin-top: 10px; font-weight: bold; }
+            #qr-container { margin-top: 20px; background: #fff; padding: 15px; border-radius: 8px; display: inline-block; }
+            #qr-container img { width: 220px; height: 220px; }
+            .status { font-weight: bold; margin-top: 15px; font-size: 16px; }
         </style>
     </head>
     <body>
         <div class="card">
             <h2>AFK Bot Manager</h2>
-            <p>Entrez votre numéro WhatsApp (ex: 509XXXXXXXX)</p>
-            <input type="text" id="phone" placeholder="509XXXXXXXX">
-            <button onclick="getCode()">Obtenir le Code</button>
-            <div id="result"></div>
+            <p>Scannez le QR Code ci-dessous avec votre application WhatsApp</p>
+            <div id="status" class="status" style="color: #38bdf8;">Chargement du QR Code...</div>
+            <div id="qr-container"><img id="qr-img" src="" alt="Génération du QR Code..." style="display:none;"></div>
+            <button onclick="location.reload()">Rafraîchir le QR Code</button>
         </div>
         <script>
-            async function getCode() {
-                const phone = document.getElementById('phone').value.trim();
-                const resDiv = document.getElementById('result');
-                if(!phone) { alert('Entrez un numéro'); return; }
-                resDiv.innerHTML = "Génération en cours, patientez...";
+            async function checkStatus() {
                 try {
-                    const response = await fetch('/pair?number=' + phone);
-                    const data = await response.json();
-                    if(data.code) {
-                        resDiv.innerHTML = 'Votre code d\\'appairage :<div class="code-box">' + data.code + '</div>';
-                    } else {
-                        resDiv.innerHTML = '<span style="color: #f43f5e;">' + (data.message || data.error) + '</span>';
+                    const res = await fetch('/status');
+                    const data = await res.json();
+                    if(data.connected) {
+                        document.getElementById('status').innerHTML = '<span style="color: #22c55e;">Connecté avec succès ! 🚀</span>';
+                        document.getElementById('qr-container').style.display = 'none';
+                    } else if(data.qrImage) {
+                        document.getElementById('qr-img').src = data.qrImage;
+                        document.getElementById('qr-img').style.display = 'block';
+                        document.getElementById('status').innerHTML = 'Scannez avec WhatsApp';
                     }
-                } catch(e) {
-                    resDiv.innerHTML = '<span style="color: #f43f5e;">Erreur de requête.</span>';
-                }
+                } catch(e) {}
             }
+            setInterval(checkStatus, 3000);
+            checkStatus();
         </script>
     </body>
     </html>
   `);
 });
 
-// --- LOGIQUE WHATSAPP & BAILEYS ---
-async function startWhatsApp(num, res = null) {
-  const sessionPath = path.join(__dirname, `session_${num}`);
+app.get('/status', async (req, res) => {
+  if (isConnected) {
+    return res.json({ connected: true });
+  }
+  if (latestQR) {
+    try {
+      const qrImage = await qrcode.toDataURL(latestQR);
+      return res.json({ connected: false, qrImage });
+    } catch (e) {
+      return res.json({ connected: false, qrImage: null });
+    }
+  }
+  res.json({ connected: false, qrImage: null });
+});
+
+// --- CONNEXION WHATSAPP VIA QR CODE ---
+async function startWhatsApp() {
+  const sessionPath = path.join(__dirname, `session_auth`);
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -106,59 +122,30 @@ async function startWhatsApp(num, res = null) {
   });
 
   globalSock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+    
+    if (qr) {
+      latestQR = qr;
+      console.log('[+] Nouveau QR Code généré ! Scannez-le depuis votre interface web.');
+    }
+
     if (connection === 'open') {
       console.log('[+] WhatsApp connecté avec succès !');
-      activePairingCode = null;
+      isConnected = true;
+      latestQR = null;
     }
+
     if (connection === 'close') {
+      isConnected = false;
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       if (shouldReconnect) {
-        setTimeout(() => startWhatsApp(num), 5000);
+        setTimeout(() => startWhatsApp(), 5000);
       }
     }
   });
-
-  // Si non enregistré, on attend brièvement que la websocket s'ouvre puis on demande le code
-  if (!globalSock.authState.creds.registered) {
-    await new Promise(resolve => setTimeout(resolve, 4000));
-    try {
-      const code = await globalSock.requestPairingCode(num);
-      activePairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-      if (res && !res.headersSent) {
-        return res.json({ code: activePairingCode });
-      }
-    } catch (err) {
-      console.error("Erreur pairing code:", err);
-      if (res && !res.headersSent) {
-        return res.status(500).json({ error: "Échec de génération du code." });
-      }
-    }
-  } else {
-    if (res && !res.headersSent) {
-      return res.json({ message: "Ce numéro est déjà connecté." });
-    }
-  }
 }
-
-app.get('/pair', async (req, res) => {
-  let num = req.query.number;
-  if (!num) return res.status(400).json({ error: 'Numéro requis' });
-  num = num.replace(/[^0-9]/g, '');
-
-  try {
-    if (globalSock && globalSock.authState.creds.registered) {
-      return res.json({ message: 'Session déjà active.' });
-    }
-    await startWhatsApp(num, res);
-  } catch (err) {
-    console.error(err);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Erreur interne' });
-    }
-  }
-});
 
 app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
+  startWhatsApp();
 });
