@@ -10,6 +10,8 @@ const {
   makeCacheableSignalKeyStore
 } = require('@whiskeysockets/baileys');
 
+const handleCommands = require('./commands');
+
 const app = express();
 const PORT = process.env.PORT || 10000;
 
@@ -31,7 +33,6 @@ app.get('/pair', async (req, res) => {
 
   const sessionPath = path.join(__dirname, `session_${num}`);
 
-  // Supprime l'ancienne session pour autoriser une nouvelle connexion
   if (fs.existsSync(sessionPath)) {
     fs.rmSync(sessionPath, { recursive: true, force: true });
   }
@@ -50,6 +51,11 @@ app.get('/pair', async (req, res) => {
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // Écoute des messages pour exécuter les commandes
+    sock.ev.on('messages.upsert', async (msg) => {
+      await handleCommands(sock, msg);
+    });
 
     await delay(3000);
     const code = await sock.requestPairingCode(num);
