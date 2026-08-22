@@ -7,8 +7,7 @@ const QRCode = require('qrcode');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  makeCacheableSignalKeyStore,
-  Browsers
+  makeCacheableSignalKeyStore
 } = require('@whiskeysockets/baileys');
 
 const handleCommands = require('./commands');
@@ -23,7 +22,7 @@ app.get('/', (req, res) => {
   res.send('AFK SubBot Backend prêt !');
 });
 
-// ROUTE CODE PAIRING ULTRA-RAPIDE
+// ROUTE CODE PAIRING
 app.get('/pair', async (req, res) => {
   let num = req.query.number;
   if (!num) return res.status(400).json({ error: 'Numéro requis' });
@@ -39,15 +38,17 @@ app.get('/pair', async (req, res) => {
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     
     const sock = makeWASocket({
+      version: [2, 3000, 1015901307], // Version WhatsApp requise
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
       },
       printQRInTerminal: false,
       logger: pino({ level: 'fatal' }),
-      browser: Browsers.macOS('Desktop'),
-      connectTimeoutMs: 30000,
-      keepAliveIntervalMs: 15000
+      browser: ['Ubuntu', 'Chrome', '20.0.04'], // Emulation stable
+      connectTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000,
+      generateHighQualityLinkPreview: true
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -57,32 +58,39 @@ app.get('/pair', async (req, res) => {
     });
 
     sock.ev.on('connection.update', async (update) => {
-      const { connection } = update;
+      const { connection, lastDisconnect } = update;
+      
       if (connection === 'open') {
         console.log(`[+] Connecté : ${num}`);
         await sock.sendMessage(`${num}@s.whatsapp.net`, { 
           text: `Connexion réussie ! Votre SubBot est prêt. Tapez *.menu* pour commencer.` 
         });
       }
+
+      if (connection === 'close') {
+        const reason = lastDisconnect?.error?.output?.statusCode;
+        console.log(`[-] Connexion fermée pour ${num}, raison : ${reason}`);
+      }
     });
 
-    // Génération instantanée sans délai d'attente
+    // Envoi du Code Pairing
     setTimeout(async () => {
       try {
         const code = await sock.requestPairingCode(num);
         const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
         if (!res.headersSent) return res.json({ code: formattedCode });
       } catch (e) {
-        if (!res.headersSent) return res.status(500).json({ error: 'Erreur réseau, réessayez' });
+        console.error("Erreur Pairing Code:", e);
+        if (!res.headersSent) return res.status(500).json({ error: 'Erreur génération du code' });
       }
-    }, 1000);
+    }, 3000); // 3 secondes pour assurer la poignée de main du socket
 
   } catch (err) {
     if (!res.headersSent) res.status(500).json({ error: 'Erreur serveur' });
   }
 });
 
-// ROUTE QR CODE INSTANTANÉ
+// ROUTE QR CODE
 app.get('/qr', async (req, res) => {
   let num = req.query.number || 'default';
   num = num.replace(/[^0-9]/g, '');
@@ -96,13 +104,14 @@ app.get('/qr', async (req, res) => {
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
     const sock = makeWASocket({
+      version: [2, 3000, 1015901307],
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
       },
       printQRInTerminal: false,
       logger: pino({ level: 'fatal' }),
-      browser: Browsers.macOS('Desktop')
+      browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -127,5 +136,5 @@ app.get('/qr', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
+  console.log(`Serveur AFK démarré sur le port ${PORT}`);
 });
