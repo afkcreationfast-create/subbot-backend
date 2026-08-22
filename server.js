@@ -14,10 +14,15 @@ const {
 const handleCommands = require('./commands');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 8080; // Utilise 8080 ou process.env.PORT
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+
+// Route d'accueil pour éviter le "Cannot GET /"
+app.get('/', (req, res) => {
+  res.send('<h1>🚀 AFK SubBot Backend est en ligne et opérationnel !</h1>');
+});
 
 // Stockage permanent du socket
 let globalSock = null;
