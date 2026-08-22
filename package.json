@@ -7,10 +7,13 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.18",
+    "@whiskeysockets/baileys": "6.6.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
     "pino": "^9.1.0",
     "qrcode": "^1.5.3"
+  },
+  "overrides": {
+    "libsignal-node": "npm:@whiskeysockets/libsignal-node@^2.0.1"
   }
 }
