@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const pino = require('pino');
+const fs = require('fs');
+const path = require('path');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -9,9 +11,9 @@ const {
 } = require('@whiskeysockets/baileys');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-app.use(cors());
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 app.get('/', (req, res) => {
@@ -25,11 +27,17 @@ app.get('/pair', async (req, res) => {
     return res.status(400).json({ error: 'Numéro de téléphone requis' });
   }
 
-  // Nettoyage du numéro
   num = num.replace(/[^0-9]/g, '');
 
+  const sessionPath = path.join(__dirname, `session_${num}`);
+
+  // Supprime l'ancienne session pour autoriser une nouvelle connexion
+  if (fs.existsSync(sessionPath)) {
+    fs.rmSync(sessionPath, { recursive: true, force: true });
+  }
+
   try {
-    const { state, saveCreds } = await useMultiFileAuthState(`./session_${num}`);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     
     const sock = makeWASocket({
       auth: {
@@ -37,21 +45,18 @@ app.get('/pair', async (req, res) => {
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
       },
       printQRInTerminal: false,
-      logger: pino({ level: 'fatal' })
+      logger: pino({ level: 'fatal' }),
+      browser: ['Ubuntu', 'Chrome', '20.0.04']
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    if (!sock.authState.creds.registered) {
-      await delay(1500);
-      const code = await sock.requestPairingCode(num);
-      return res.json({ code: code });
-    } else {
-      return res.json({ code: 'DÉJÀ CONNECTÉ' });
-    }
+    await delay(3000);
+    const code = await sock.requestPairingCode(num);
+    return res.json({ code: code });
 
   } catch (err) {
-    console.error(err);
+    console.error("Erreur pairing:", err);
     return res.status(500).json({ error: 'Erreur lors de la génération du code' });
   }
 });
