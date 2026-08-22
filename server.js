@@ -19,108 +19,79 @@ const PORT = process.env.PORT || 10000;
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// Stockage global des sessions en mémoire
-const sessions = {};
+// Stockage permanent du socket
+let globalSock = null;
+let activePairingCode = null;
 
-app.get('/', (req, res) => {
-  res.send('AFK SubBot Backend prêt et opérationnel !');
-});
+async function initWhatsApp(num) {
+  const sessionPath = path.join(__dirname, `session_${num}`);
+  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+  const { version } = await fetchLatestBaileysVersion();
 
-// ROUTE ULTIME DE CONNEXION PAIRING
+  globalSock = makeWASocket({
+    version,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
+    },
+    printQRInTerminal: false,
+    logger: pino({ level: 'fatal' }),
+    browser: ['Ubuntu', 'Chrome', '122.0.6261.94'],
+    connectTimeoutMs: 120000,
+    keepAliveIntervalMs: 30000,
+    markOnlineOnConnect: true
+  });
+
+  globalSock.ev.on('creds.update', saveCreds);
+
+  globalSock.ev.on('messages.upsert', async (msg) => {
+    await handleCommands(globalSock, msg);
+  });
+
+  globalSock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect } = update;
+    if (connection === 'open') {
+      console.log(`[+] Connecté à WhatsApp !`);
+      activePairingCode = null;
+    }
+    if (connection === 'close') {
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      if (statusCode !== DisconnectReason.loggedOut) {
+        initWhatsApp(num);
+      }
+    }
+  });
+
+  // Laisser 6 secondes au socket pour s'enregistrer auprès de WhatsApp
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+
+  if (!globalSock.authState.creds.registered) {
+    const code = await globalSock.requestPairingCode(num);
+    activePairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
+  }
+}
+
 app.get('/pair', async (req, res) => {
   let num = req.query.number;
   if (!num) return res.status(400).json({ error: 'Numéro requis' });
-
   num = num.replace(/[^0-9]/g, '');
-  const sessionPath = path.join(__dirname, `session_${num}`);
 
   try {
-    // Si une session existe déjà, on la nettoie pour forcer un nouveau pairing propre
-    if (!sessions[num]) {
-      if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true });
-      }
-
-      const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-      const { version } = await fetchLatestBaileysVersion();
-
-      const sock = makeWASocket({
-        version,
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
-        },
-        printQRInTerminal: false,
-        logger: pino({ level: 'fatal' }),
-        // Emulation officielle Chrome Linux ultra-compatible
-        browser: ['Ubuntu', 'Chrome', '122.0.6261.94'],
-        connectTimeoutMs: 120000,
-        keepAliveIntervalMs: 30000,
-        retryRequestDelayMs: 2000,
-        markOnlineOnConnect: true
-      });
-
-      sessions[num] = sock;
-
-      sock.ev.on('creds.update', saveCreds);
-
-      sock.ev.on('messages.upsert', async (msg) => {
-        await handleCommands(sock, msg);
-      });
-
-      sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-
-        if (connection === 'open') {
-          console.log(`[+] Connecté avec succès au numéro : ${num}`);
-          await sock.sendMessage(`${num}@s.whatsapp.net`, { 
-            text: `✅ *AFK SubBot Connecté !*\n\nVotre bot est désormais opérationnel. Tapez *.menu* pour commencer.` 
-          });
-        }
-
-        if (connection === 'close') {
-          const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-          
-          delete sessions[num];
-
-          if (shouldReconnect) {
-            console.log(`[-] Reconnexion automatique pour ${num}...`);
-          } else {
-            console.log(`[-] Déconnexion définitive pour ${num}.`);
-            if (fs.existsSync(sessionPath)) {
-              fs.rmSync(sessionPath, { recursive: true, force: true });
-            }
-          }
-        }
-      });
+    if (!globalSock || !globalSock.authState.creds.registered) {
+      await initWhatsApp(num);
     }
 
-    const sock = sessions[num];
-
-    // Attente de 3 secondes pour générer le code
-    setTimeout(async () => {
-      try {
-        if (sock && !sock.authState.creds.registered) {
-          const code = await sock.requestPairingCode(num);
-          const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
-          if (!res.headersSent) return res.json({ code: formattedCode });
-        } else {
-          if (!res.headersSent) return res.json({ message: 'Session déjà connectée' });
-        }
-      } catch (e) {
-        console.error('Erreur Pairing:', e);
-        delete sessions[num];
-        if (!res.headersSent) return res.status(500).json({ error: 'Échec de génération. Réessayez.' });
-      }
-    }, 3000);
-
+    if (activePairingCode) {
+      return res.json({ code: activePairingCode });
+    } else {
+      return res.json({ message: 'Connexion déjà établie ou en cours...' });
+    }
   } catch (err) {
-    console.error('Erreur serveur:', err);
-    if (!res.headersSent) res.status(500).json({ error: 'Erreur interne du serveur' });
+    console.error(err);
+    return res.status(500).json({ error: 'Erreur lors de la génération' });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur AFK SubBot actif sur le port ${PORT}`);
+  console.log(`Serveur AFK SubBot démarré sur le port ${PORT}`);
 });
