@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const pino = require('pino');
-const fs = require('fs');
 const path = require('path');
 const {
   default: makeWASocket,
@@ -23,7 +22,7 @@ app.use(express.urlencoded({ extended: true }));
 let globalSock = null;
 let activePairingCode = null;
 
-// Interface graphique moderne et épurée
+// --- INTERFACE GRAPHIQUE INTÉGRÉE ---
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -31,43 +30,43 @@ app.get('/', (req, res) => {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>AFK SubBot - Connexion WhatsApp</title>
+        <title>AFK Création et Marketing - WhatsApp Bot</title>
         <style>
-            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: #f8fafc; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-            .card { background: #1e293b; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); width: 100%; max-width: 400px; text-align: center; }
-            h2 { margin-bottom: 10px; color: #38bdf8; }
-            p { color: #94a3b8; font-size: 14px; margin-bottom: 20px; }
-            input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 16px; margin-bottom: 15px; box-sizing: border-box; text-align: center; }
-            button { background: #0284c7; color: white; border: none; padding: 12px; width: 100%; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+            body { font-family: Arial, sans-serif; background: #0f172a; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+            .card { background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); width: 100%; max-width: 380px; text-align: center; }
+            h2 { color: #38bdf8; margin-bottom: 5px; }
+            p { color: #94a3b8; font-size: 13px; margin-bottom: 20px; }
+            input { width: 100%; padding: 12px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #fff; font-size: 16px; margin-bottom: 15px; box-sizing: border-box; text-align: center; }
+            button { background: #0284c7; color: white; border: none; padding: 12px; width: 100%; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: pointer; }
             button:hover { background: #0369a1; }
-            #result { margin-top: 20px; font-size: 18px; font-weight: bold; word-break: break-all; }
-            .code-box { background: #0f172a; border: 2px dashed #38bdf8; padding: 15px; border-radius: 8px; font-size: 24px; letter-spacing: 2px; color: #38bdf8; margin-top: 10px; }
+            #result { margin-top: 20px; font-size: 16px; word-break: break-all; }
+            .code-box { background: #0f172a; border: 2px dashed #38bdf8; padding: 12px; border-radius: 6px; font-size: 22px; letter-spacing: 2px; color: #38bdf8; margin-top: 10px; font-weight: bold; }
         </style>
     </head>
     <body>
         <div class="card">
-            <h2>AFK SubBot</h2>
-            <p>Entrez votre numéro WhatsApp avec l'indicatif (ex: 509XXXXXXXX)</p>
+            <h2>AFK Bot Manager</h2>
+            <p>Entrez votre numéro WhatsApp (ex: 509XXXXXXXX)</p>
             <input type="text" id="phone" placeholder="509XXXXXXXX">
-            <button onclick="getCode()">Générer le Code</button>
+            <button onclick="getCode()">Obtenir le Code</button>
             <div id="result"></div>
         </div>
         <script>
             async function getCode() {
                 const phone = document.getElementById('phone').value.trim();
-                const resultDiv = document.getElementById('result');
-                if(!phone) { alert('Veuillez entrer un numéro valide'); return; }
-                resultDiv.innerHTML = "Génération en cours...";
+                const resDiv = document.getElementById('result');
+                if(!phone) { alert('Entrez un numéro'); return; }
+                resDiv.innerHTML = "Génération en cours, patientez...";
                 try {
-                    const res = await fetch('/pair?number=' + phone);
-                    const data = await res.json();
+                    const response = await fetch('/pair?number=' + phone);
+                    const data = await response.json();
                     if(data.code) {
-                        resultDiv.innerHTML = 'Code d\\'appairage :<div class="code-box">' + data.code + '</div>';
+                        resDiv.innerHTML = 'Votre code d\\'appairage :<div class="code-box">' + data.code + '</div>';
                     } else {
-                        resultDiv.innerHTML = '<span style="color: #f43f5e;">' + (data.message || data.error) + '</span>';
+                        resDiv.innerHTML = '<span style="color: #f43f5e;">' + (data.message || data.error) + '</span>';
                     }
                 } catch(e) {
-                    resultDiv.innerHTML = '<span style="color: #f43f5e;">Erreur de connexion au serveur.</span>';
+                    resDiv.innerHTML = '<span style="color: #f43f5e;">Erreur de requête.</span>';
                 }
             }
         </script>
@@ -76,7 +75,8 @@ app.get('/', (req, res) => {
   `);
 });
 
-async function initWhatsApp(num, resObj = null) {
+// --- LOGIQUE WHATSAPP & BAILEYS ---
+async function startWhatsApp(num, res = null) {
   const sessionPath = path.join(__dirname, `session_${num}`);
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
   const { version } = await fetchLatestBaileysVersion();
@@ -85,10 +85,10 @@ async function initWhatsApp(num, resObj = null) {
     version,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
     },
     printQRInTerminal: false,
-    logger: pino({ level: 'fatal' }),
+    logger: pino({ level: 'silent' }),
     browser: ['Ubuntu', 'Chrome', '122.0.6261.94'],
     connectTimeoutMs: 60000,
     keepAliveIntervalMs: 30000,
@@ -98,41 +98,45 @@ async function initWhatsApp(num, resObj = null) {
   globalSock.ev.on('creds.update', saveCreds);
 
   globalSock.ev.on('messages.upsert', async (msg) => {
-    await handleCommands(globalSock, msg);
+    try {
+      await handleCommands(globalSock, msg);
+    } catch (err) {
+      console.error("Erreur commande:", err);
+    }
   });
 
   globalSock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
     if (connection === 'open') {
-      console.log(`[+] Connecté à WhatsApp avec succès !`);
+      console.log('[+] WhatsApp connecté avec succès !');
       activePairingCode = null;
     }
     if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      if (statusCode !== DisconnectReason.loggedOut) {
-        setTimeout(() => initWhatsApp(num), 5000);
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      if (shouldReconnect) {
+        setTimeout(() => startWhatsApp(num), 5000);
       }
     }
   });
 
+  // Si non enregistré, on attend brièvement que la websocket s'ouvre puis on demande le code
   if (!globalSock.authState.creds.registered) {
-    // Attente de sécurité pour laisser la socket s'initialiser correctement
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 4000));
     try {
       const code = await globalSock.requestPairingCode(num);
       activePairingCode = code?.match(/.{1,4}/g)?.join('-') || code;
-      if (resObj && !resObj.headersSent) {
-        resObj.json({ code: activePairingCode });
+      if (res && !res.headersSent) {
+        return res.json({ code: activePairingCode });
       }
     } catch (err) {
       console.error("Erreur pairing code:", err);
-      if (resObj && !resObj.headersSent) {
-        resObj.status(500).json({ error: 'Impossible de générer le code, réessayez.' });
+      if (res && !res.headersSent) {
+        return res.status(500).json({ error: "Échec de génération du code." });
       }
     }
   } else {
-    if (resObj && !resObj.headersSent) {
-      resObj.json({ message: 'Ce numéro est déjà enregistré et connecté !' });
+    if (res && !res.headersSent) {
+      return res.json({ message: "Ce numéro est déjà connecté." });
     }
   }
 }
@@ -146,15 +150,15 @@ app.get('/pair', async (req, res) => {
     if (globalSock && globalSock.authState.creds.registered) {
       return res.json({ message: 'Session déjà active.' });
     }
-    await initWhatsApp(num, res);
+    await startWhatsApp(num, res);
   } catch (err) {
     console.error(err);
     if (!res.headersSent) {
-      return res.status(500).json({ error: 'Erreur interne du serveur' });
+      res.status(500).json({ error: 'Erreur interne' });
     }
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Serveur AFK SubBot démarré sur le port ${PORT}`);
+  console.log(`Serveur démarré sur le port ${PORT}`);
 });
